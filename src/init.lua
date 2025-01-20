@@ -7,16 +7,23 @@
     Description: Music controller that supports control from client and server.
 ]]
 
+-- Services
+local RunService = game:GetService("RunService")
+
+-- Types
 export type MusicController = {
 -- Internal
     -- Record of current track Names registered by ID
-    _trackNames: {[number]: string},
+    _trackNames: {string},
 
     -- Record of current track Sounds registered by ID
-    _trackSounds: {[number]: Sound},
+    _trackSounds: {Sound},
 
     -- Current ID of playing / paused track
     _currentTrack: number?,
+
+    -- Whether or not the next track should automatically play, true by default
+    _autoPlayNextTrack: boolean,
 
     -- Connection that will play the next track when currentTrack completes.
     _nextTrackConnection: RBXScriptConnection?,
@@ -26,7 +33,7 @@ export type MusicController = {
     BindRemote: (self: MusicController, remote: RemoteEvent) -> nil,
 
     -- This method will populate the track names and track sounds based on a supplied table of sounds.
-    PopulateLibrary: (self: MusicController, library: {[number]: Sound}) -> nil,
+    PopulateLibrary: (self: MusicController, library: {Sound}, conifig: Configuration) -> nil,
 
     -- This method returns the ID and sound of the next track in the queue
     GetTrack: (self: MusicController, track: string?) -> (number?, Sound?),
@@ -47,6 +54,10 @@ export type MusicController = {
     Skip: (self: MusicController) -> nil,
 }
 
+export type Configuration = {
+    autoPlayNextTrack: boolean,
+}
+
 
 
 --[=[
@@ -57,7 +68,8 @@ export type MusicController = {
 local MusicController = {
     _trackNames = {},
     _trackSounds = {},
-    _currentTrack = nil
+    _currentTrack = nil,
+    _autoPlayNextTrack = true
 } :: MusicController
 
 --[=[
@@ -67,15 +79,28 @@ local MusicController = {
 
     @param library {[number]: Sound} -- Supplied table of Sounds to populate the library with
 ]=]
-function MusicController:PopulateLibrary(library: {[number]: Sound})
+function MusicController:PopulateLibrary(library: {Sound}, config: Configuration?)
+    -- Wipe Library if already populated
+    self._trackNames = {}
+    self._trackSounds = {}
+
+    -- Populate Library
     for id, sound in library do
         if typeof(sound) ~= "Instance" or not sound:IsA("Sound") then
-            warn(`supplied object is not a Sound`)
+            -- Debug
+            if RunService:IsStudio() then
+                warn(`supplied object is not a Sound`)
+            end
             continue
         end
 
         self._trackNames[id] = sound.Name
         self._trackSounds[id] = sound
+    end
+
+    -- Update configuration
+    if config then
+        self._autoPlayNextTrack = config.autoPlayNextTrack
     end
 
     return
@@ -90,7 +115,10 @@ end
 ]=]
 function MusicController:BindRemote(remote: RemoteEvent)
     if typeof(remote) ~= "Instance" or not remote:IsA("RemoteEvent") then
-        warn(`supplied object is not a RemoteEvent`)
+        -- Debug
+        if RunService:IsStudio() then
+            warn(`supplied object is not a RemoteEvent`)
+        end
         return
     end
 
@@ -141,14 +169,20 @@ end
 function MusicController:Play(track: string?)
     -- Verify that the music library was populated
     if #self._trackNames == 0 or #self._trackSounds == 0 then
-        warn(`Did you forget to Initialize the music folder?`)
+        -- Debug
+        if RunService:IsStudio() then
+            warn(`Did you forget to Initialize the music folder?`)
+        end
         return
     end
 
     -- Gather information regarding the next track to play
     local trackID, trackSound = self:GetTrack(track)
     if not trackID or not trackSound then
-        warn(`failed to play track {track}`)
+        -- Debug
+        if RunService:IsStudio() then
+            warn(`failed to play track {track}`)
+        end
         return
     end
 
@@ -157,12 +191,16 @@ function MusicController:Play(track: string?)
         self:Stop()
     end
 
-    -- Update the current track and connections, play the track
+    -- Update the current track and play the track
     self._currentTrack = trackID
     self._trackSounds[trackID]:Play()
-    self._nextTrackConnection = self._trackSounds[trackID].Ended:Once(function()
-        self:Play()
-    end)
+
+    -- Handle auto-playing the next track
+    if self._autoPlayNextTrack then
+        self._nextTrackConnection = self._trackSounds[trackID].Ended:Once(function()
+            self:Play()
+        end)
+    end
 
     return
 end
@@ -187,7 +225,10 @@ end
 ]=]
 function MusicController:Resume()
     if not self._currentTrack then
-        warn(`failed to resume track`)
+        -- Debug
+        if RunService:IsStudio() then
+            warn(`failed to resume track`)
+        end
         return
     end
 
@@ -222,7 +263,10 @@ end
 ]=]
 function MusicController:Skip()
     if not self._currentTrack then
-        warn(`failed to skip track`)
+        -- Debug
+        if RunService:IsStudio() then
+            warn(`failed to skip track`)
+        end
         return
     end
 
