@@ -138,22 +138,24 @@ end
     @return (trackID number, trackSound Sound) -- Next ID and Sound in queue
 ]=]
 function MusicController:GetTrack(track: string?)
-    -- If no track is supplied, gather the next one or the last one so the queue starts at the beignning.
-    if not track then
-        track = self._trackNames[self._currentTrack or #self._trackNames]
-    end
-
+    -- Search for a matching track name
     if track then
-        -- Search for a matching track name
+        for trackNumber, name in self._trackNames do
+            if name == track then
+                return trackNumber, self._trackSounds[trackNumber]
+            end
+        end
+
+    -- Otherwise, search for next track in the queue
+    else
+        -- If no track is supplied, gather the next one, or the last one so the queue starts at the beignning.
+        track = if self._currentTrack then self._trackNames[self._currentTrack] else self._trackNames[#self._trackNames]
         for trackNumber, name in self._trackNames do
             if name == track then
                 local nextTrackID = if trackNumber + 1 <= #self._trackNames then trackNumber + 1 else 1
                 return nextTrackID, self._trackSounds[nextTrackID]
             end
         end
-    else
-        -- No track was supplied, return the first one in the queue
-        return 1, self._trackSounds[1]
     end
 
     return nil, nil
