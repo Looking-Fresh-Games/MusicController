@@ -4,13 +4,35 @@
     MusicController.lua
     Author: Michael S (DevIrradiant)
 
-    Description: Music controller that supports control from client and server.
+    Description: Music controller that supports control from client and server. Optional configuration for adjusting cross-fade duration, and auto-play toggle.
 ]]
 
 -- Services
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
 -- Types
+type CrossFadeStatus = {
+-- Internal
+    -- Tween for sound fading out
+    FadeOutTween: Tween?,
+
+    -- Connection for once fadeOut has completed
+    FadeOutConnection: RBXScriptConnection?,
+
+    -- Tween for sound fading in
+    FadeInTween: Tween?,
+
+    -- Connection for once fadeIn has completed
+    FadeInConnection: RBXScriptConnection?
+}
+
+export type Configuration = {
+-- External
+    autoPlayNextTrack: boolean,
+    crossFadeSeconds: number,
+}
+
 export type MusicController = {
 -- Internal
     -- Record of current track Names registered by ID
@@ -25,8 +47,13 @@ export type MusicController = {
     -- Whether or not the next track should automatically play, true by default
     _autoPlayNextTrack: boolean,
 
+    -- Time in seconds for songs to cross fade
+    _crossFadeSeconds: number,
+
     -- Connection that will play the next track when currentTrack completes.
     _nextTrackConnection: RBXScriptConnection?,
+
+    _crossFadeStatus: CrossFadeStatus,
 
 -- External
     -- This method will bind a remote to allow Play overrides from the server
@@ -54,10 +81,6 @@ export type MusicController = {
     Skip: (self: MusicController) -> nil,
 }
 
-export type Configuration = {
-    autoPlayNextTrack: boolean,
-}
-
 
 
 --[=[
@@ -66,10 +89,15 @@ export type Configuration = {
     A simple handler for client and server controlled Music.
 ]=]
 local MusicController = {
+-- Refs
     _trackNames = {},
     _trackSounds = {},
+    _autoPlayNextTrack = true,
+    _crossFadeSeconds = 0,
+
+-- State
     _currentTrack = nil,
-    _autoPlayNextTrack = true
+    _crossFadeStatus = {}
 } :: MusicController
 
 --[=[
@@ -81,6 +109,7 @@ local MusicController = {
 ]=]
 function MusicController:PopulateLibrary(library: {Sound}, config: Configuration?)
     -- Wipe Library if already populated
+    self:Stop()
     self._trackNames = {}
     self._trackSounds = {}
 
@@ -96,11 +125,15 @@ function MusicController:PopulateLibrary(library: {Sound}, config: Configuration
 
         self._trackNames[id] = sound.Name
         self._trackSounds[id] = sound
+
+        -- Store original volume data for cross fading
+        sound:SetAttribute("OriginalVolume", sound.Volume)
     end
 
     -- Update configuration
     if config then
         self._autoPlayNextTrack = config.autoPlayNextTrack
+        self._crossFadeSeconds = config.crossFadeSeconds
     end
 
     return
@@ -195,12 +228,39 @@ function MusicController:Play(track: string?)
 
     -- Update the current track and play the track
     self._currentTrack = trackID
+
+    -- Reset sound volume and begin the track
+    self._trackSounds[trackID].Volume = 0
     self._trackSounds[trackID]:Play()
+
+    -- Setup Tween
+    self._crossFadeStatus.FadeInTween = TweenService:Create(
+        self._trackSounds[trackID],
+        TweenInfo.new(self._crossFadeSeconds, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut),
+        {Volume = self._trackSounds[trackID]:GetAttribute("OriginalVolume")}
+    )
+
+    -- Run Tween
+    if not self._crossFadeStatus.FadeInTween then
+        return
+    end
+    self._crossFadeStatus.FadeInTween:Play()
+
+    -- Setup connection for once sound has faded in
+    self._crossFadeStatus.FadeInConnection = self._crossFadeStatus.FadeInTween.Completed:Once(function()
+        self._crossFadeStatus.FadeInTween:Destroy()
+    end)
 
     -- Handle auto-playing the next track
     if self._autoPlayNextTrack then
-        self._nextTrackConnection = self._trackSounds[trackID].Ended:Once(function()
-            self:Play()
+        self._nextTrackConnection = RunService.Heartbeat:Connect(function()
+            -- Begin next track when crossFade threshold is met
+            if self._trackSounds[trackID].TimePosition >= self._trackSounds[trackID].TimeLength - self._crossFadeSeconds then
+                if self._nextTrackConnection then
+                    self._nextTrackConnection:Disconnect()
+                end
+                self:Play()
+            end
         end)
     end
 
@@ -245,15 +305,78 @@ end
     @within MusicController
 ]=]
 function MusicController:Stop()
-    if self._currentTrack then
-        self._trackSounds[self._currentTrack]:Stop()
+    -- Utl
+    local function beginFade(sound: Sound)
+        -- Setup Tween
+        self._crossFadeStatus.FadeOutTween = TweenService:Create(
+            sound,
+            TweenInfo.new(self._crossFadeSeconds, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut),
+            {Volume = 0}
+        )
+
+        -- Run Tween
+        if not self._crossFadeStatus.FadeOutTween then
+            return
+        end
+        self._crossFadeStatus.FadeOutTween:Play()
+
+        -- Setup connection for once sound has faded out
+        self._crossFadeStatus.FadeOutConnection = self._crossFadeStatus.FadeOutTween.Completed:Once(function()
+            self._crossFadeStatus.FadeOutTween:Destroy()
+
+            sound:Stop()
+
+            -- Determine if a new track has began. If not, reset currentTrack
+            local soundID = table.find(self._trackNames, sound.Name)
+            if not soundID then
+                -- Debug
+                if RunService:IsStudio() then
+                    warn(`failed to locate soundID`)
+                end
+                return
+            end
+
+            if soundID == self._currentTrack then
+                self._currentTrack = nil
+            end
+        end)
     end
 
+    -- If a sound is already fading out, terminate this as we need to now fade out the sound attempting to fade in
+    if self._crossFadeStatus.FadeOutTween and self._crossFadeStatus.FadeOutTween.PlaybackState == Enum.PlaybackState.Playing then
+        -- Cleanup connection
+        if self._crossFadeStatus.FadeOutConnection and self._crossFadeStatus.FadeOutConnection.Connected then
+            self._crossFadeStatus.FadeOutConnection:Disconnect()
+        end
+
+        -- Clean up tween and stop the sound
+        self._crossFadeStatus.FadeOutTween:Cancel()
+        local fadeOutSound = self._crossFadeStatus.FadeOutTween.Instance :: Sound
+        fadeOutSound:Stop()
+        self._crossFadeStatus.FadeOutTween:Destroy()
+    end
+
+    -- If a sound is already fading in, terminate this and fade out the sound
+    if self._crossFadeStatus.FadeInTween and self._crossFadeStatus.FadeInTween.PlaybackState == Enum.PlaybackState.Playing then
+        -- Cleanup connection
+        if self._crossFadeStatus.FadeInConnection and self._crossFadeStatus.FadeInConnection.Connected then
+            self._crossFadeStatus.FadeInConnection:Disconnect()
+        end
+
+        -- Clean up the tween and begin fading in
+        self._crossFadeStatus.FadeInTween:Cancel()
+        beginFade(self._crossFadeStatus.FadeInTween.Instance :: Sound)
+        self._crossFadeStatus.FadeInTween:Destroy()
+
+    -- Otherwise, just begin fade out the sound currently playing
+    elseif self._currentTrack then
+        beginFade(self._trackSounds[self._currentTrack])
+    end
+
+    -- Clean up nextTrackConnection
     if self._nextTrackConnection and self._nextTrackConnection.Connected then
         self._nextTrackConnection:Disconnect()
     end
-
-    self._currentTrack = nil
 
     return
 end
@@ -272,9 +395,7 @@ function MusicController:Skip()
         return
     end
 
-    local nextTrackID = if self._currentTrack + 1 <= #self._trackNames then self._currentTrack + 1 else 1
-    local nextTrackName = self._trackNames[nextTrackID]
-    self:Play(nextTrackName)
+    self:Play()
 
     return
 end
