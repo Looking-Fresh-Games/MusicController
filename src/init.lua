@@ -307,6 +307,10 @@ end
 function MusicController:Stop()
     -- Utl
     local function beginFade(sound: Sound)
+        if not sound then
+            return
+        end
+
         -- Setup Tween
         self._crossFadeStatus.FadeOutTween = TweenService:Create(
             sound,
