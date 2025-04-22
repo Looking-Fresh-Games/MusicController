@@ -44,6 +44,9 @@ export type MusicController = {
     -- Current ID of playing / paused track
     _currentTrack: number?,
 
+    -- Current playlist
+    _currentPlaylist: {string}?,
+
     -- Whether or not the next track should automatically play, true by default
     _autoPlayNextTrack: boolean,
 
@@ -60,7 +63,7 @@ export type MusicController = {
     BindRemote: (self: MusicController, remote: RemoteEvent) -> nil,
 
     -- This method will populate the track names and track sounds based on a supplied table of sounds.
-    PopulateLibrary: (self: MusicController, library: {Sound}, conifig: Configuration) -> nil,
+    PopulateLibrary: (self: MusicController, library: {Sound}, config: Configuration) -> nil,
 
     -- This method returns the ID and sound of the next track in the queue
     GetTrack: (self: MusicController, track: string?) -> (number?, Sound?),
@@ -79,6 +82,9 @@ export type MusicController = {
 
     -- This method will skip the current track if one exists.
     Skip: (self: MusicController) -> nil,
+
+    -- Add a playlist of sound names to override skip/auto play logic. Pass a nil playlist to return to the global playlist
+    SetPlaylist: (self: MusicController, tracks: {string}?) -> nil,
 }
 
 
@@ -97,6 +103,7 @@ local MusicController = {
 
 -- State
     _currentTrack = nil,
+    _currentPlaylist = nil,
     _crossFadeStatus = {}
 } :: MusicController
 
@@ -181,12 +188,37 @@ function MusicController:GetTrack(track: string?)
 
     -- Otherwise, search for next track in the queue
     else
-        -- If no track is supplied, gather the next one, or the last one so the queue starts at the beignning.
-        track = if self._currentTrack then self._trackNames[self._currentTrack] else self._trackNames[#self._trackNames]
-        for trackNumber, name in self._trackNames do
-            if name == track then
-                local nextTrackID = if trackNumber + 1 <= #self._trackNames then trackNumber + 1 else 1
-                return nextTrackID, self._trackSounds[nextTrackID]
+
+        -- Go to next sound in playlist if one exists, otherwise use global _trackNames
+        if self._currentPlaylist then
+            -- Defaults to end of playlist so we start from the beginning
+            local playlistIndex = #self._currentPlaylist
+
+            -- Already playing from playlist
+            if self._currentTrack then
+                local onPlaylist = table.find(self._currentPlaylist, self._trackNames[self._currentTrack])
+                if onPlaylist then
+                    playlistIndex = onPlaylist
+                end
+            end
+
+            -- Increment index
+            playlistIndex += 1
+            if playlistIndex > #self._currentPlaylist then
+                playlistIndex = 1
+            end
+
+            local nextTrackID = table.find(self._trackNames, self._currentPlaylist[playlistIndex]) :: number
+            return nextTrackID, self._trackSounds[nextTrackID]
+        else
+
+            -- If no track is supplied, gather the next one, or the last one so the queue starts at the beginning.
+            track = if self._currentTrack then self._trackNames[self._currentTrack] else self._trackNames[#self._trackNames]
+            for trackNumber, name in self._trackNames do
+                if name == track then
+                    local nextTrackID = if trackNumber + 1 <= #self._trackNames then trackNumber + 1 else 1
+                    return nextTrackID, self._trackSounds[nextTrackID]
+                end
             end
         end
     end
@@ -403,5 +435,31 @@ function MusicController:Skip()
 
     return
 end
+
+
+--[=[
+    Sets a playlist of sound names that have already been registered with MusicController:PopulateLibrary().
+    This playlist will override the next track logic, looping thru sounds only in the playlist.
+
+    @within MusicController
+
+    @param playlist {[number]: string} -- Table of sound names to set as the playlist. Pass nil to return controller to global playlist
+]=]
+function MusicController:SetPlaylist(playlist: {string}?)
+    -- Verify playlist sounds have been registered with PopulateLibrary()
+    if playlist then
+        for _id, soundName in playlist do
+            if table.find(self._trackNames, soundName) == nil then
+                warn(`Cannot add playlist: track "{soundName}" does not exist in music library! Did you forget to include it in MusicController:PopulateLibrary()?`)
+                return
+            end
+        end
+    end
+
+    self._currentPlaylist = playlist
+
+    return
+end
+
 
 return MusicController
